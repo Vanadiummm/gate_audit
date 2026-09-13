@@ -1,0 +1,27 @@
+[project]
+name = "gate-audit"
+version = "0.1.0"
+description = "具备流量审计的企业正向代理服务器（域名级访问控制）"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.1.3",
+]
+
+[project.scripts]
+# 安装后可用 `uv run gate-audit` 启动，等价于 `uv run python -m proxy.main`
+gate-audit = "proxy.main:main"
+
+[tool.pytest.ini_options]
+# asyncio_mode=auto：测试函数直接用 async def，无需手动加 @pytest.mark.asyncio
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# 本项目用的是"以 gate_audit 为根的绝对导入"（如 from filter.engine import ...），
+# 所以要让 pytest 把项目根目录也加进 sys.path，否则测试里 import 会失败。
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

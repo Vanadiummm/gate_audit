@@ -1,0 +1,20 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8080,
+  "admin_host": "127.0.0.1",
+  "admin_port": 5000,
+  "db_path": "audit.db",
+  "default_policy": "allow",
+
+  "users": {
+    "admin": { "password": "admin123", "role": "admin" },
+    "alice": { "password": "alice123", "role": "user" }
+  },
+
+  "rules": {
+    "whitelist": ["*.gov.cn", "*.edu.cn"],
+    "blacklist": ["evil.com", "gambling.example"],
+    "category": ["gambling"],
+    "regex": [".*\\.bet\\d+\\..*"]
+  }
+}
