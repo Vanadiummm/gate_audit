@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}登录 · gate_audit 管理端{% endblock %}
+
+{% block content %}
+<div class="login-wrap">
+  <div class="card">
+    <h2>管理员登录</h2>
+
+    {% if error %}<div class="alert error">{{ error }}</div>{% endif %}
+
+    {# next 用 url_for 生成，让 Flask 自动做 URL 编码，避免特殊字符把 action 拆坏 #}
+    {% set nxt = request.args.get('next') %}
+    <form method="post" action="{{ url_for('login', next=nxt) if nxt else url_for('login') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <p><input name="username" placeholder="用户名" autofocus autocomplete="username" style="width:100%"></p>
+      <p><input name="password" type="password" placeholder="密码" autocomplete="current-password" style="width:100%"></p>
+      <p><button style="width:100%">登录</button></p>
+    </form>
+
+    <p class="muted">
+      登录与操作都会被记入管理操作日志。<br>
+      连续失败 5 次将锁定 5 分钟。
+    </p>
+  </div>
+</div>
+{% endblock %}

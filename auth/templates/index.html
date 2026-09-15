@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}总览 · gate_audit 管理端{% endblock %}
+
+{% block content %}
+
+<div class="card">
+  <h2>过滤规则 <span class="muted">（改动即时生效，并写入 config.json）</span></h2>
+  <table>
+    <tr><th style="width:110px">类型</th><th>模式</th><th style="width:90px"></th></tr>
+    {% for kind, items in rules.items() %}{% for p in items %}
+      {# 规则项有两种形态：纯字符串，或 {"pattern":..., "role":...}（只对某角色生效） #}
+      {% set pat = p.pattern if p is mapping else p %}
+    <tr>
+      <td><span class="tag">{{ kind }}</span></td>
+      <td>
+        {{ pat }}
+        {% if p is mapping and p.role %}<span class="muted"> · 仅对 {{ p.role }} 生效</span>{% endif %}
+      </td>
+      <td>
+        {% if can('edit_rules') %}
+        <form method="post" action="{{ url_for('remove_rule') }}" class="inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="kind" value="{{ kind }}">
+          <input type="hidden" name="pattern" value="{{ pat }}">
+          <button class="danger">删除</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}{% endfor %}
+  </table>
+
+  {% if can('edit_rules') %}
+  <p></p>
+  <form method="post" action="{{ url_for('add_rule') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <select name="kind">
+      <option value="whitelist">whitelist</option>
+      <option value="blacklist">blacklist</option>
+      <option value="category">category</option>
+      <option value="regex">regex</option>
+    </select>
+    <input name="pattern" placeholder="例如 evil.com / *.gov.cn / gambling" size="40">
+    <button>添加</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>网络访问审计 <span class="muted">（最新 100 条，来自 audit 表）</span></h2>
+  <table>
+    <tr>
+      <th>时间</th><th>来源</th><th>用户</th><th>角色</th>
+      <th>方法</th><th>目标</th><th>动作</th><th>原因</th>
+    </tr>
+    {% for r in logs %}
+    <tr>
+      <td>{{ r.ts }}</td><td>{{ r.client_ip }}</td><td>{{ r.user }}</td><td>{{ r.role }}</td>
+      <td>{{ r.method }}</td><td>{{ r.host }}:{{ r.port }}</td>
+      <td>{{ r.action }}</td><td>{{ r.reason }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="muted">暂无记录</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>管理操作日志 <span class="muted">（最新 50 条，来自 admin_audit 表 —— 审计者也被审计）</span></h2>
+  <table>
+    <tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>说明</th><th>来源</th></tr>
+    {% for r in admin_logs %}
+    <tr>
+      <td>{{ r.ts }}</td><td>{{ r.actor }}</td><td>{{ r.action }}</td>
+      <td>{{ r.target }}</td><td>{{ r.detail }}</td><td>{{ r.client_ip }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">暂无记录</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% if can('dangerous') %}
+<div class="card">
+  <h2>危险操作 <span class="muted">（仅超级管理员）</span></h2>
+  <p class="muted">
+    当前默认策略：<b>{{ default_policy }}</b> —— 即请求未命中任何规则时，按此策略处理。
+  </p>
+  <form method="post" action="{{ url_for('set_policy') }}" class="inline">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <select name="policy">
+      <option value="allow" {% if default_policy == 'allow' %}selected{% endif %}>allow</option>
+      <option value="block" {% if default_policy == 'block' %}selected{% endif %}>block</option>
+    </select>
+    <button>切换默认策略</button>
+  </form>
+  <form method="post" action="{{ url_for('purge_logs') }}" class="inline"
+        onsubmit="return confirm('确认清空网络访问审计日志？此操作不可撤销（管理操作日志会保留）。')">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <button class="danger">清空网络访问日志</button>
+  </form>
+</div>
+{% endif %}
+
+{% endblock %}

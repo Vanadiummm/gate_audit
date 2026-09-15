@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}账号管理 · gate_audit 管理端{% endblock %}
+
+{% block content %}
+
+<div class="card">
+  <h2>后台账号 <span class="muted">（仅超级管理员可见）</span></h2>
+  <p class="muted">
+    密码以 scrypt 哈希存储，页面永不回显。删除或降级账号时会强制保留至少一个超级管理员，
+    以防后台被锁死。所有变更都会写入管理操作日志。
+  </p>
+  <table>
+    <tr>
+      <th>用户名</th>
+      <th style="width:110px">角色</th>
+      <th style="width:200px">改角色</th>
+      <th style="width:230px">重置密码</th>
+      <th style="width:80px"></th>
+    </tr>
+    {% for a in accounts %}
+    <tr>
+      <td>{{ a.name }}</td>
+      <td><span class="tag {% if a.role == 'superadmin' %}super{% endif %}">{{ a.role }}</span></td>
+      <td>
+        <form method="post" action="{{ url_for('admin_role') }}" class="inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="name" value="{{ a.name }}">
+          <select name="role">
+            {% for r in roles %}
+            <option value="{{ r }}" {% if r == a.role %}selected{% endif %}>{{ r }}</option>
+            {% endfor %}
+          </select>
+          <button>保存</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="{{ url_for('admin_reset') }}" class="inline">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="name" value="{{ a.name }}">
+          <input name="password" type="password" placeholder="新密码" size="12">
+          <button>重置</button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="{{ url_for('admin_remove') }}" class="inline"
+              onsubmit="return confirm('确认删除账号 {{ a.name }}？')">
+          <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="name" value="{{ a.name }}">
+          <button class="danger">删除</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2 style="margin-top:20px">新建账号</h2>
+  <form method="post" action="{{ url_for('admin_create') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+    <input name="name" placeholder="用户名" size="16">
+    <input name="password" type="password" placeholder="密码" size="16">
+    <select name="role">
+      <option value="admin">admin</option>
+      <option value="superadmin">superadmin</option>
+    </select>
+    <button>创建</button>
+  </form>
+</div>
+
+{% endblock %}

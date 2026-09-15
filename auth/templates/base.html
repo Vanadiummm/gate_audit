@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}gate_audit 管理端{% endblock %}</title>
+<style>
+  :root{--bg:#f6f7f9;--fg:#1f2937;--line:#e5e7eb;--muted:#6b7280;--accent:#2563eb;--danger:#dc2626}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px}
+  header{background:#1f2937;color:#fff;padding:12px 22px;display:flex;align-items:center;gap:18px}
+  header .brand{font-weight:500}
+  header nav{display:flex;gap:16px;margin-left:10px}
+  header nav a{color:#cbd5e1;text-decoration:none}
+  header nav a:hover{color:#fff}
+  header .who{margin-left:auto;display:flex;align-items:center;gap:10px;color:#cbd5e1}
+  main{max-width:1000px;margin:22px auto;padding:0 16px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:18px}
+  h2{font-size:15px;margin:0 0 12px;font-weight:500}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border-bottom:1px solid #f0f0f0;padding:6px 8px;text-align:left;vertical-align:middle}
+  th{color:#555;font-weight:500}
+  input,select{padding:5px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px}
+  button{padding:5px 12px;border:0;border-radius:6px;background:var(--accent);color:#fff;cursor:pointer;font-size:13px}
+  button.danger{background:var(--danger)}
+  button.ghost{background:transparent;border:1px solid #4b5563;color:#e5e7eb}
+  .tag{display:inline-block;padding:1px 8px;border-radius:10px;background:#eef2ff;color:#3730a3;font-size:12px}
+  .tag.super{background:#fef3c7;color:#92400e}
+  .alert{padding:9px 14px;border-radius:8px;margin-bottom:14px;font-size:13px}
+  .alert.notice{background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0}
+  .alert.error{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}
+  .muted{color:var(--muted);font-size:12px}
+  .login-wrap{max-width:360px;margin:90px auto}
+  form.inline{display:inline}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">gate_audit · 管理端</span>
+  {% if who %}
+  <nav>
+    <a href="{{ url_for('index') }}">总览</a>
+    {% if can('manage_admins') %}<a href="{{ url_for('admins') }}">账号管理</a>{% endif %}
+  </nav>
+  <div class="who">
+    <span class="tag {% if who.role.value == 'superadmin' %}super{% endif %}">{{ who.role.value }}</span>
+    <span>{{ who.name }}</span>
+    <form method="post" action="{{ url_for('logout') }}" class="inline">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="ghost">登出</button>
+    </form>
+  </div>
+  {% endif %}
+</header>
+<main>
+  {# 操作结果提示走 flash（基于 session），配合 Post-Redirect-Get，
+     刷新页面不会重复提交上一条表单。 #}
+  {% for category, message in get_flashed_messages(with_categories=true) %}
+    <div class="alert {{ category }}">{{ message }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>
