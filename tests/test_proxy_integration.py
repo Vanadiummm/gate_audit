@@ -23,6 +23,7 @@ import pytest
 
 from audit.logger import AuditLogger
 from audit.storage import AuditStorage
+from auth.admins import AdminStore
 from auth.roles import RoleManager
 from config.loader import Config
 from filter.engine import FilterEngine
@@ -82,6 +83,7 @@ async def env(tmp_path):
         storage=storage,
         logger=AuditLogger(storage),
         roles=RoleManager(cfg.users),
+        admins=AdminStore(cfg.admins),
     )
 
     # 3) 启动审计后台任务 + 代理服务

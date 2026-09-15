@@ -19,6 +19,12 @@ testpaths = ["tests"]
 # 本项目用的是"以 gate_audit 为根的绝对导入"（如 from filter.engine import ...），
 # 所以要让 pytest 把项目根目录也加进 sys.path，否则测试里 import 会失败。
 pythonpath = ["."]
+# pytest 默认只保留最近 3 次运行的临时目录，并在每次会话开始时删除更旧的
+# （系统临时目录下的 pytest-of-<用户>/ 目录）。在本机沙箱环境下，这个自动清理
+# 会触发"删除工作区外文件"的权限拦截，所以把保留数量设得足够大，实际等于关掉它。
+# 代价：系统临时目录里会留下少量测试残渣（每个几十 KB）。
+tmp_path_retention_count = 1000
+tmp_path_retention_policy = "all"
 
 [dependency-groups]
 dev = [

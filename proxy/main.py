@@ -30,8 +30,9 @@ from audit.logger import AuditLogger
 from audit.storage import AuditStorage
 from auth.admin_web import create_app as create_admin_app
 from auth.admin_web import start_admin
+from auth.admins import AdminStore
 from auth.roles import RoleManager
-from config.loader import load_config
+from config.loader import ensure_secret_key, load_config
 from filter.engine import FilterEngine
 from proxy.connection import serve_client
 from proxy.context import ProxyContext
@@ -40,12 +41,20 @@ from proxy.context import ProxyContext
 def build_context() -> ProxyContext:
     """读配置、建各组件，打包成 ProxyContext。"""
     cfg = load_config()
+    # session 签名密钥缺失时自动生成并写回配置文件，避免重启后登录态全部失效。
+    ensure_secret_key(cfg)
     storage = AuditStorage(cfg.resolve_db_path())
     engine = FilterEngine(cfg.rules, cfg.default_policy)
     roles = RoleManager(cfg.users)
+    admins = AdminStore(cfg.admins)
     logger = AuditLogger(storage)
     return ProxyContext(
-        config=cfg, engine=engine, storage=storage, logger=logger, roles=roles
+        config=cfg,
+        engine=engine,
+        storage=storage,
+        logger=logger,
+        roles=roles,
+        admins=admins,
     )
 
 

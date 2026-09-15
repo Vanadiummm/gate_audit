@@ -28,3 +28,4 @@ class ProxyContext:
     storage: object   # audit.storage.AuditStorage   审计落库（sqlite）
     logger: object    # audit.logger.AuditLogger     审计异步缓冲（asyncio.Queue）
     roles: object     # auth.roles.RoleManager       代理认证与角色
+    admins: object    # auth.admins.AdminStore       后台账号与权限（管理端登录用）

@@ -5,16 +5,42 @@
   "admin_port": 5000,
   "db_path": "audit.db",
   "default_policy": "allow",
-
-  "users": {
-    "admin": { "password": "admin123", "role": "admin" },
-    "alice": { "password": "alice123", "role": "user" }
+  "admin_secret_key": "cf3c74027b8b9cb064e3daa97169eb1ac5e9799ebf569ec0eb36f38fb25176c4",
+  "admin_session_minutes": 30,
+  "admins": {
+    "root": {
+      "password_hash": "scrypt:32768:8:1$o4KsbSB2aIPTucBs$1444e22e6e8b492635e063b45d3f40952a9e5919b71a9cbd3442f294dea0c70e47a925d6ac7a62263b89e4d1bab436a263f449a7bd2047d8510302465c02353b",
+      "role": "superadmin"
+    },
+    "ops": {
+      "password_hash": "scrypt:32768:8:1$GQkorY0U1x06aR5X$53107ac983532bd121d6902007b91dda8043953d61f10da970a1a5e2992e82bcfa4d9bbc85938d4c294f6ef161a48ebd1c304d87b91ff6b17e661bb4fe8de1e7",
+      "role": "admin"
+    }
   },
-
+  "users": {
+    "admin": {
+      "password": "admin123",
+      "role": "admin"
+    },
+    "alice": {
+      "password": "alice123",
+      "role": "user"
+    }
+  },
   "rules": {
-    "whitelist": ["*.gov.cn", "*.edu.cn"],
-    "blacklist": ["evil.com", "gambling.example"],
-    "category": ["gambling"],
-    "regex": [".*\\.bet\\d+\\..*"]
+    "whitelist": [
+      "*.gov.cn",
+      "*.edu.cn"
+    ],
+    "blacklist": [
+      "evil.com",
+      "gambling.example"
+    ],
+    "category": [
+      "gambling"
+    ],
+    "regex": [
+      ".*\\.bet\\d+\\..*"
+    ]
   }
 }
