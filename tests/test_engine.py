@@ -1,15 +1,10 @@
-"""过滤引擎与规则匹配的单元测试。
-
-这些测试只关心"纯逻辑"，不启动任何服务、不碰网络与磁盘——这正是把引擎设计成
-"同步、无 IO、纯逻辑"带来的好处：可以极快地、确定性地验证规则语义。
-"""
+"""过滤引擎与域名匹配。"""
 
 from filter.classifier import classify
 from filter.engine import FilterEngine, RequestMeta
 from filter.rules import Action, RuleKind, domain_matches, normalize_host
 
 
-# --------------------------- 域名匹配 --------------------------- #
 def test_normalize_host():
     assert normalize_host("WWW.Example.COM.") == "www.example.com"
     assert normalize_host("example.com:8080") == "example.com"
@@ -17,11 +12,8 @@ def test_normalize_host():
 
 
 def test_domain_matches_exact_and_subdomain():
-    # 精确匹配
     assert domain_matches("evil.com", "evil.com")
-    # 子域也算命中（防止用 a.evil.com 绕过）
     assert domain_matches("a.evil.com", "evil.com")
-    # 不同域不应命中
     assert not domain_matches("notevil.com", "evil.com")
     assert not domain_matches("evil.com.evil.org", "evil.com")
 
@@ -41,7 +33,6 @@ def test_classify():
     assert classify("example.com") == "other"
 
 
-# --------------------------- 引擎判定 --------------------------- #
 def test_default_policy_allow():
     engine = FilterEngine(rules={}, default_policy="allow")
     decision = engine.evaluate(RequestMeta(host="example.com"))

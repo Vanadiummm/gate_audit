@@ -1,20 +1,4 @@
-"""管理端测试的公共基建。
-
-这里放两样东西，供 test_admin.py 与 test_admin_auth.py 共用：
-
-1. `admin_env` fixture —— 起一个真实的管理端（Flask 守护线程 + tmp 配置 + tmp 数据库），
-   并预置两个后台账号用于测试：
-        root / root123  超级管理员
-        ops  / ops123   管理员
-
-2. `AdminClient` —— 一个"会保存 cookie"的测试客户端。
-   为什么要自己包一层？因为标准库的 urllib 默认不保存 cookie，而登录鉴权完全依赖
-   session cookie；同时它默认会自动跟随重定向，那样我们就无法断言"是否被跳去登录页"了。
-   这里用 HTTPCookieProcessor 保存 cookie，并禁掉自动重定向。
-
-始终使用标准库（urllib + http.cookiejar）而不是 requests，是为了不新增测试依赖，
-与本项目"核心尽量纯标准库"的基调一致。
-"""
+"""管理端测试夹具：Flask + cookie 客户端（urllib 默认不带 cookie、会自动跟重定向）。"""
 
 from __future__ import annotations
 
@@ -44,10 +28,7 @@ from proxy.context import ProxyContext
 ROOT = ("root", "root123")      # 超级管理员
 OPS = ("ops", "ops123")         # 管理员
 
-# 哈希只在模块导入时算一次，供所有测试复用。
-# 为什么这么做：scrypt 是刻意设计成"慢"的（这正是它抗暴力破解的原因），
-# 单次约 0.1 秒。若每个测试都重新生成两个账号的哈希，几十个用例就要多花十几秒。
-# 哈希内容与随机盐无关紧要（测试只关心能否校验通过），所以复用是完全安全的。
+# scrypt 慢，模块导入时只算一次，避免每个用例都重新哈希。
 _ROOT_HASH = hash_password(ROOT[1])
 _OPS_HASH = hash_password(OPS[1])
 
@@ -124,11 +105,7 @@ class AdminClient:
         return self._open(self.base + path, urllib.parse.urlencode(body).encode())
 
     def token(self, page: str = "/") -> str:
-        """取（必要时抓取）CSRF token。
-
-        注意：登录成功时代码会 session.clear()，token 也随之作废。
-        所以 login() 成功后会把缓存清掉，下一次 token() 会重新抓取。
-        """
+        """登录成功会 session.clear()，缓存的 token 要丢掉。"""
         if not self._token_cache:
             html = self.get(page).text
             match = re.search(r'name="_csrf" value="([^"]+)"', html)
@@ -167,7 +144,6 @@ def admin_env(tmp_path):
         default_policy="allow",
         users={},
         admins=seed_admins,
-        # 固定一个密钥，否则每个测试都会重新生成，且 Flask session 需要它才能工作
         admin_secret_key="test-secret-key-only-for-tests",
         admin_session_minutes=30,
         rules={"blacklist": ["evil.com"]},

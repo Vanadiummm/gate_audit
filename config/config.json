@@ -19,11 +19,11 @@
   },
   "users": {
     "admin": {
-      "password": "admin123",
+      "password_hash": "scrypt:32768:8:1$VmDzcl4ux3NJWRbm$3d84a80cc2294f8bce4bc183b07c19a4b32efa430431cdb043eafc3629f181954f7c4c8bfb2d820bde7bf8f37df4fc82c5804192bff0a27fb4ea69c013861d30",
       "role": "admin"
     },
     "alice": {
-      "password": "alice123",
+      "password_hash": "scrypt:32768:8:1$RbeqFHnFSZDV1sMd$2fdd26ac212517c9104d45703893e71806b2f6ad98f466cb270ab32761c8886a8352cf46c19897dc61355b13ffcf32c4b5d8edf5622ce371785bb01d670a70f4",
       "role": "user"
     }
   },
@@ -34,7 +34,8 @@
     ],
     "blacklist": [
       "evil.com",
-      "gambling.example"
+      "gambling.example",
+      "example.com"
     ],
     "category": [
       "gambling"
@@ -42,5 +43,23 @@
     "regex": [
       ".*\\.bet\\d+\\..*"
     ]
+  },
+  "keepalive": true,
+  "pool_max_per_host": 8,
+  "pool_idle_seconds": 30,
+  "limits": {
+    "user": {
+      "rps": 5,
+      "bps": 65536,
+      "quota_requests": 10000,
+      "quota_bytes": 104857600,
+      "quota_window": 86400
+    },
+    "admin": {
+      "rps": 0,
+      "bps": 0,
+      "quota_requests": 0,
+      "quota_bytes": 0
+    }
   }
 }

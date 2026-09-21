@@ -1,22 +1,4 @@
-"""审计存储：sqlite3 的薄封装（建表 / 写入 / 查询）。
-
-本项目有两类审计记录，刻意分成两张表：
-
-    audit        网络访问日志 —— 谁在什么时候访问了哪个站点、被放行还是拦截
-    admin_audit  管理操作日志 —— 哪个后台账号改了什么规则、删了哪个账号
-
-为什么要分开：两类记录的字段语义完全不同（前者是 host/port/url/rule_id，
-后者是 actor/action/target）。硬塞进一张表，要么一半字段永远为空，
-要么字段含义混杂、查询和统计都别扭。企业产品里"访问日志"与"操作日志"
-也普遍是分开存放的。
-
-线程模型说明（这块最容易踩坑，值得讲清）：
-- 写入由 asyncio 的线程池（run_in_executor）或 Flask 的请求线程调用，
-  可能来自不同线程，所以创建连接时用 check_same_thread=False，
-  并用一把锁把写操作串行化。
-- 读取（管理端查日志）也复用同一个连接，用同一把锁保护，避免并发访问冲突。
-- sqlite 适合本项目这种"单机、单文件、轻量查询"的场景，零额外依赖。
-"""
+"""sqlite 存储。访问日志和管理操作日志分两张表。"""
 
 from __future__ import annotations
 
@@ -68,7 +50,7 @@ class AuditStorage:
         self._conn.commit()
 
     def write(self, event) -> None:
-        """写入一条审计记录（阻塞 IO，应在工作线程里调用）。"""
+        """写入访问日志。阻塞，应在工作线程调用。"""
         row = {
             "ts": event.ts,
             "client_ip": event.client_ip,
@@ -98,7 +80,7 @@ class AuditStorage:
         host: str | None = None,
         role: str | None = None,
     ) -> list[dict[str, Any]]:
-        """查询最近的审计记录（供管理端展示），支持按域名模糊、按角色过滤。"""
+        """最近访问记录，可按域名模糊、按角色过滤。"""
         sql = (
             "SELECT ts, client_ip, user, role, method, host, port, url, action, rule_id, reason "
             "FROM audit"
@@ -121,7 +103,6 @@ class AuditStorage:
             cols = [c[0] for c in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
-    # ------------------------------------------------------------------ 管理操作日志
     def write_admin(
         self,
         actor: str,
@@ -131,12 +112,7 @@ class AuditStorage:
         client_ip: str = "",
         ts: str | None = None,
     ) -> None:
-        """写入一条"管理操作"审计记录。
-
-        与 write() 的区别：write() 记的是"网络访问"（host/url/action），
-        这里记的是"人对系统的操作"（actor/action/target）。
-        ts 一般不用传，留空即取当前时间。
-        """
+        """写入管理操作日志。"""
         row = {
             "ts": ts or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "actor": actor,
@@ -154,7 +130,7 @@ class AuditStorage:
             self._conn.commit()
 
     def query_admin(self, limit: int = 100, action: str | None = None) -> list[dict]:
-        """查询管理操作记录（供管理端展示），可选按 action 精确过滤。"""
+        """最近管理操作，可按 action 过滤。"""
         sql = "SELECT ts, actor, action, target, detail, client_ip FROM admin_audit"
         params: list[Any] = []
         if action:
@@ -169,12 +145,7 @@ class AuditStorage:
             return [dict(zip(cols, row)) for row in cur.fetchall()]
 
     def purge_audit(self) -> int:
-        """清空"网络访问"审计日志（危险操作，仅超管可触发），返回删除的行数。
-
-        刻意**只清 audit 表，不动 admin_audit**：
-        如果连管理操作日志一起清掉，管理员清完日志就把"自己清了日志"这件事
-        也抹掉了——"审计者被审计"就形同虚设。这是审计系统的一条基本原则。
-        """
+        """只清访问日志，保留 admin_audit。"""
         with self._lock:
             cur = self._conn.execute("DELETE FROM audit")
             self._conn.commit()

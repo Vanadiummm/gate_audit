@@ -1,11 +1,4 @@
-"""管理端鉴权与权限的测试。
-
-覆盖三类东西：
-    1) 认证 —— 登录、登出、密码校验、失败锁定
-    2) 授权 —— 两级角色的权限边界、越权被拒
-    3) 安全 —— CSRF 防护、开放重定向、会话固定、最后一个超管保护、密码不回显
-另外还验证"操作留痕"（admin_audit 表）与"账号删除后旧会话立即失效"。
-"""
+"""管理端：登录、权限边界、CSRF、开放重定向、最后超管保护。"""
 
 import json
 
@@ -15,7 +8,6 @@ from auth.admins import AdminRole
 from conftest import OPS, ROOT
 
 
-# ============================================================ 认证
 def test_unauthenticated_index_redirects_to_login(admin_env):
     """未登录访问总览应被跳转到登录页，并记住原地址。"""
     resp = admin_env.client().get("/")
@@ -79,17 +71,15 @@ def test_logout_invalidates_session(root_client):
     assert root_client.get("/").status == 302
 
 
-# ============================================================ 安全
 def test_post_without_csrf_token_is_rejected(ops_client, admin_env):
-    """缺少 CSRF token 的改状态请求必须被 400 拦下。"""
+    """缺 CSRF 的 POST 回 400。"""
     resp = ops_client.post("/rules/add", {"kind": "blacklist", "pattern": "x.test"}, csrf=False)
     assert resp.status == 400
-    # 规则没有被真的加进去
     assert "x.test" not in admin_env.ctx.engine.snapshot()["blacklist"]
 
 
 def test_open_redirect_is_blocked(admin_env):
-    """next 指向站外时，必须回落站内首页，不能被当成钓鱼跳板。"""
+    """`next` 指向站外时回落到首页。"""
     for bad in ("http://evil.example/", "//evil.example/"):
         client = admin_env.client()
         client.token("/login")
@@ -128,9 +118,8 @@ def test_password_hash_is_never_rendered(root_client):
     assert OPS[1] not in page
 
 
-# ============================================================ 授权
 def test_admin_can_edit_rules_and_is_logged(ops_client, admin_env):
-    """管理员拥有 EDIT_RULES：能改规则，且改动被记入操作日志。"""
+    """管理员能改规则，并写入操作日志。"""
     resp = ops_client.post("/rules/add", {"kind": "blacklist", "pattern": "bad2.test"})
     assert resp.status == 302
     assert "bad2.test" in admin_env.ctx.engine.snapshot()["blacklist"]
@@ -159,14 +148,12 @@ def test_admin_cannot_do_dangerous_actions(ops_client, admin_env):
     assert ops_client.post("/actions/purge-logs", {}).status == 403
     assert ops_client.post("/actions/policy", {"policy": "block"}).status == 403
 
-    # 两者都没有生效
     assert len(admin_env.storage.query(limit=10)) == 1
     assert admin_env.ctx.engine.default_policy.value == "allow"
 
 
-# ============================================================ 账号管理（超管）
 def test_superadmin_can_create_account_and_persist(root_client, admin_env):
-    """超管建账号：应立即生效、写回 config.json，并留痕。"""
+    """超管建账号：内存、config.json、操作日志一并更新。"""
     resp = root_client.post(
         "/admins/create",
         {"name": "newbie", "password": "p@ss1234", "role": "admin"},
@@ -188,7 +175,7 @@ def test_superadmin_can_create_account_and_persist(root_client, admin_env):
 
 
 def test_last_superadmin_cannot_be_removed(root_client, admin_env):
-    """删掉最后一个超管必须被拒绝，否则后台会永久锁死。"""
+    """不能删掉最后一个超管。"""
     resp = root_client.post("/admins/remove", {"name": ROOT[0]})
     assert resp.status == 302
 
@@ -243,9 +230,8 @@ def test_removed_account_session_dies_immediately(admin_env, root_client):
     assert victim.get("/").status == 302                # 立刻被踢回登录页
 
 
-# ============================================================ 危险操作（超管）
 def test_superadmin_purge_keeps_admin_audit(root_client, admin_env):
-    """清空网络日志要成功，但管理操作日志必须保留（审计者也被审计）。"""
+    """清访问日志，保留管理操作日志。"""
     for host in ("a.com", "b.com", "c.com"):
         admin_env.storage.write(AuditEvent(host=host, port=80, action="allow"))
     assert len(admin_env.storage.query(limit=10)) == 3

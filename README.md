@@ -3,15 +3,13 @@
 《网络工程项目实施》题目四的实现。一个**域名级访问控制 + 全量审计**的显式正向代理：
 客户端把网关当代理，网关按黑/白名单放行或拦截，并把每一次访问记入审计库。
 
-技术要点（也是本项目的四个核心设计）：
+技术要点：
 
-1. **转发前判定、转发后异步存储**——判定必须在转发链路上同步完成（快路径），
-   落库是磁盘 IO，被挪到转发之后由后台协程异步做（慢路径），两者解耦。
-2. **只做域名级审计，不做 MITM**——HTTP 按明文请求行取域名；HTTPS 只根据 CONNECT 的
-   域名决定放行与否，隧道内是加密字节流的原样对拷，不解密内容。
-3. **代理侧两级角色权限**——规则可标注只对 `user` 生效，`admin` 不受其约束。
-4. **管理端两级权限 + 操作留痕**——后台账号与代理账号完全分离；权限以
-   「权限点 + 角色矩阵」组织；后台自己的操作也写审计，做到"审计者被审计"。
+1. **转发前判定、转发后异步落库**
+2. **只做域名级审计，HTTPS 不解密**
+3. **代理账号两级角色**（规则可只对 `user` 生效）
+4. **后台账号与代理账号分开**，操作写 `admin_audit`
+5. **必须代理认证（407）**；HTTP keep-alive 与上游连接池；按角色限速/配额（429）
 
 ---
 
@@ -23,7 +21,7 @@
 cd gate_audit
 
 uv sync                      # 安装依赖（Flask + pytest）
-uv run python -m proxy.main  # 启动（务必在 gate_audit 目录下执行）
+uv run python -m proxy.main  # 启动（项目根目录）
 ```
 
 启动后会看到：
@@ -40,20 +38,29 @@ uv run python -m proxy.main  # 启动（务必在 gate_audit 目录下执行）
 | `root` | `root123` | 超管 superadmin | 看日志、改规则、**管后台账号**、危险操作 |
 | `ops` | `ops123` | 管理员 admin | 看日志、改规则 |
 
-> 演示用账号，生产必须改。改密码在管理端「账号管理」页重置即可，
-> 也可以直接用模块命令生成哈希后手工填进 `config/config.json`（见 §六）。
+> 默认账号，上线前改掉。改密码可在管理端「账号管理」页重置，
+> 或用模块命令生成哈希后填进 `config/config.json`（见 §六）。
+
+### 代理默认账号（走 8080，必须带 `-U`）
+
+| 账号 | 密码 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| `alice` | `alice123` | user | 受全部员工规则与 `limits.user` 约束 |
+| `admin` | `admin123` | admin | 不受 `role: user` 的规则约束；默认不限速 |
+
+缺少或错误的 `Proxy-Authorization` 会得到 **407**，浏览器设代理后会弹出账号框。
 
 ### 试用
 
 ```bash
-# 明文 HTTP 走代理（放行）
-curl -x http://127.0.0.1:8080 http://example.com
+# 明文 HTTP 走代理（必须带账号，缺了回 407）
+curl -x http://127.0.0.1:8080 -U alice:alice123 http://example.com
 
 # 命中黑名单 -> 403
-curl -i -x http://127.0.0.1:8080 http://evil.com
+curl -i -x http://127.0.0.1:8080 -U alice:alice123 http://evil.com
 
 # HTTPS（走 CONNECT 隧道，只看域名）
-curl -x http://127.0.0.1:8080 https://www.example.com
+curl -x http://127.0.0.1:8080 -U alice:alice123 https://www.example.com
 
 # 带角色认证（admin 不受只针对 user 的规则约束）
 curl -x http://127.0.0.1:8080 -U admin:admin123 http://evil.com
@@ -65,7 +72,7 @@ curl -x http://127.0.0.1:8080 -U admin:admin123 http://evil.com
 ### 跑测试
 
 ```bash
-uv run pytest -q            # 59 passed
+uv run pytest -q            # 77 passed（以你本机输出为准）
 ```
 
 ---
@@ -84,13 +91,13 @@ uv run pytest -q            # 59 passed
      │ TCP 连到 8080                   │                      │
      ▼                                 │                      │
 ┌──────────────────────────────────────┴──────────────────────┴──────────────┐
-│ proxy.connection  读首部 -> 认证(角色) -> 按方法分派                          │
-│      │                                                                     │
+│ proxy.connection  读首部 -> 认证 -> 限速/配额 -> 按方法分派                     │
+│      │  认证失败 407；超限 429；HTTP/1.1 可在同一 TCP 上循环多次请求            │
 │      ├─ CONNECT ──> proxy.connect   ┐                                      │
 │      └─ 其他     ──> proxy.forward  ┤                                      │
 │                                     ├─ 快路径：engine.evaluate() 转发前同步判定 │
 │                                     │     命中拦截 -> 403                    │
-│                                     └─ 放行 -> 连上游 -> 双向搬运              │
+│                                     └─ 放行 -> 连接池取上游 -> 双向搬运         │
 │                                            │                               │
 │                                            └─ 慢路径：logger.log() 异步入队   │
 └────────────────────────────────────────────────────────────────────────────┘
@@ -115,21 +122,23 @@ uv run pytest -q            # 59 passed
 
 | 路径 | 职责 |
 | --- | --- |
-| `config/config.json` | 全部配置：监听地址、**后台账号**、代理账号、过滤规则 |
+| `config/config.json` | 全部配置：监听地址、后台/代理账号、规则、连接池、限速配额 |
 | `config/loader.py` | 读配置、按段回写（`save_rules` / `save_admins` / `save_default_policy`） |
 | `filter/rules.py` | 规则数据模型 + 域名匹配（通配、子域） |
 | `filter/classifier.py` | 网站粗分类（后缀 + 关键词） |
 | `filter/engine.py` | 判定核心：**同步、无 IO**，被转发链路内联调用 |
 | `audit/storage.py` | sqlite 薄封装（线程安全）：`audit` + `admin_audit` 两张表 |
 | `audit/logger.py` | `asyncio.Queue` 缓冲 + 后台协程异步落库 |
-| `auth/roles.py` | 代理端：`Proxy-Authorization: Basic` 解析、两级角色 |
+| `auth/roles.py` | 代理端：Basic 解析、scrypt 校验；失败返回 `None`（由连接层回 407） |
 | `auth/admins.py` | **后台端**：角色/权限矩阵、账号存储、scrypt 哈希、失败锁定 |
 | `auth/admin_web.py` | Flask 管理端：登录鉴权、权限装饰器、CSRF、规则与账号维护 |
 | `auth/templates/` | 管理端 Jinja 模板（`base` / `login` / `index` / `admins`） |
-| `proxy/httpmsg.py` | HTTP 首部解析、chunked/Content-Length 消息体搬运 |
-| `proxy/forward.py` | HTTP 转发（含判定、审计） |
+| `proxy/httpmsg.py` | HTTP 首部解析、消息体搬运、`wants_keep_alive` |
+| `proxy/pool.py` | 上游明文 HTTP 连接池（CONNECT 隧道不入池） |
+| `proxy/limits.py` | 按角色的 rps 令牌桶、bps 限速、请求/字节配额 |
+| `proxy/forward.py` | HTTP 转发（判定、池化、限速搬运、审计） |
 | `proxy/connect.py` | HTTPS CONNECT 隧道（域名级判定 + 字节对拷） |
-| `proxy/connection.py` | 每连接分派、认证、错误隔离 |
+| `proxy/connection.py` | 每连接分派、强制认证、429、长连接循环、错误隔离 |
 | `proxy/main.py` | 装配与启动 |
 
 阅读顺序建议：`proxy/main.py` → `proxy/connection.py` → `proxy/forward.py`
@@ -148,47 +157,56 @@ uv run pytest -q            # 59 passed
 
 **3. 逐跳首部必须删除。** `Connection`、`Proxy-Connection`、`Keep-Alive`、
 `Proxy-Authorization` 等只描述"相邻两跳"，转发时必须吞掉，否则会把客户端的连接语义
-泄漏给源站，也会把代理的认证凭据暴露出去。
+泄漏给源站，也会把代理的认证凭据暴露出去。客户端要不要 keep-alive、代理到源站要不要
+keep-alive，是**两跳各自判断**的（`wants_keep_alive`），不能把客户端的 `Connection` 原样转给源站。
 
-**4. 消息体长度怎么确定。** `Transfer-Encoding: chunked` → 逐块搬直到 0 块；
-`Content-Length: N` → 精确搬 N 字节；都没有 → 请求无 body；响应则读到上游关闭为止。
-本项目统一发 `Connection: close`，省掉长连接复用，也让"读到 EOF"成为安全策略。
+**4. 消息体长度与长连接。** `Transfer-Encoding: chunked` → 逐块搬直到 0 块；
+`Content-Length: N` → 精确搬 N 字节；都没有 → 请求无 body；响应若源站不 keep-alive
+则读到上游关闭为止。HTTP/1.1 默认 keep-alive：同一条客户端 TCP 可循环多次请求；
+上游空闲连接按 `(host, port)` 进 `UpstreamPool`。CONNECT 是一对一加密水管，**不入池**。
 
 **5. 子域也算命中。** 规则 `evil.com` 同时命中 `a.evil.com`，否则改个前缀就能绕过。
 
 **6. CONNECT 隧道的边界。** 隧道建立后，代理看不到里面的 URL 与内容——
 这是"不解密"方案的固有限制，不是 bug。
 
-**7. 快慢路径分离。** `filter/engine.py` 刻意不 import 任何 IO 模块，
-就是为了让它天然适合内联在转发的关键路径上；审计落库全部走队列。
+**7. 快慢路径。** `filter/engine.py` 不 import IO；审计落库走队列。
 
-**8. 后台为什么用 Session 而不是 Basic。** 代理端用 `Proxy-Authorization` 是协议规定的，
-没有替代方案；但后台是网页，Basic 有三个硬伤：无法登出、浏览器反复弹原生框、
-不能做会话超时。所以后台走 Flask 的签名 Session Cookie（`itsdangerous` 随 Flask 安装，
-没引入新依赖）。
+**8. 后台用 Session。** 代理认证走 `Proxy-Authorization`（协议要求）；后台是网页，
+用 Flask 签名 Session Cookie（`itsdangerous` 随 Flask 安装）。Basic 无法登出、
+会反复弹原生框、也不好做超时。
 
 **9. `Perm` 继承 `str` 但 `Enum.__hash__` 按成员名算。**
 `hash(Perm.MANAGE_ADMINS)` 实际是 `hash("MANAGE_ADMINS")`，而字符串值是
 `"manage_admins"`——所以 `'manage_admins' in frozenset({Perm.MANAGE_ADMINS})`
-会返回 **False**。想支持字符串传参（模板里 `can('edit_rules')` 更顺手）就必须
-先转成枚举成员再比，不能依赖 `str` 的相等性。`AdminStore.allows()` 里做了这层归一化。
+会返回 **False**。模板里 `can('edit_rules')` 要先转成枚举再比，
+不能依赖 `str` 的相等性。`AdminStore.allows()` 里做了归一化。
+
+**10. 认证失败回 407。** `RoleManager.authenticate()` 失败返回 `None`，
+由 `proxy/connection.py` 回 `407` 并带 `Proxy-Authenticate: Basic`。
+密码错与缺头同等对待。
+
+**11. 限速与配额。** `rps` 用令牌桶，不够就 429（不等待，以免堵死事件循环）；
+`bps` 在搬字节时 `sleep` 摊平速度；`quota_requests` / `quota_bytes` 按窗口计数。
+配置值 **0 表示不限制**。按**角色**分档（`limits.user` / `limits.admin`），
+不是按连接。
 
 ---
 
 ## 五、管理端鉴权设计
 
-### 两套身份为什么必须分开
+### 两套身份
 
 | | 代理账号 `config.users` | 后台账号 `config.admins` |
 | --- | --- | --- |
 | 身份 | 上网的员工 | 管代理的运维 |
 | 数量 | 可能几百个 | 通常个位数 |
 | 认证 | `Proxy-Authorization`（Basic） | 表单登录 + Session |
-| 存储 | 明文（本轮刻意不动） | 哈希（scrypt） |
+| 存储 | 哈希（scrypt，`password_hash`） | 哈希（scrypt，`password_hash`） |
 | 角色 | `admin` / `user` | `superadmin` / `admin` |
 
-字段语义、存储要求、角色含义全都不同。混在一起会导致"改后台密码误伤上网账号"，
-权限泄露面也失控——所以 `config.json` 里是独立的两段。
+`config.json` 里是独立的两段。哈希格式相同，生成都用
+`uv run python -m auth.admins <密码>`。
 
 ### 权限矩阵（唯一事实来源）
 
@@ -201,9 +219,8 @@ uv run pytest -q            # 59 passed
 | `manage_admins` | 增删后台账号 / 重置密码 / 改角色 | ✅ | ❌ |
 | `dangerous` | 清空访问日志、切换默认策略 | ✅ | ❌ |
 
-路由上只写 `@require(Perm.EDIT_RULES)` 这样的**权限点声明**，不写角色判断。
-将来加第三种角色（比如"只读审计员"），只改矩阵一行，不用动任何路由。
-模板里同理，用 `{% if can('edit_rules') %}` 控制按钮显隐。
+路由上写 `@require(Perm.EDIT_RULES)`，模板用 `{% if can('edit_rules') %}`。
+加角色只改矩阵。
 
 ### 路由一览
 
@@ -226,7 +243,8 @@ uv run pytest -q            # 59 passed
 
 | 措施 | 防的是什么 | 落在哪 |
 | --- | --- | --- |
-| 密码 scrypt 哈希存储，永不回显 | 拖库即得明文 | `auth/admins.py: hash_password` |
+| 后台与代理密码均为 scrypt 哈希，永不回显 | 拖库即得明文 | `hash_password` / `roles.authenticate` |
+| 代理缺凭据或校验失败回 407 | 未认证却按匿名 user 上网 | `proxy/connection.py` |
 | 登录成功后 `session.clear()` | 会话固定攻击 | `login()` |
 | `next` 只允许站内相对路径（含排除 `//`） | 开放重定向钓鱼 | `login()` |
 | 所有改状态 POST 校验 CSRF token（`compare_digest`） | 借用管理员身份改规则 | `check_csrf()` |
@@ -235,17 +253,7 @@ uv run pytest -q            # 59 passed
 | 每次请求重新查 `AdminStore` | 被删账号的旧会话立即失效 | `current_admin()` |
 | 后台自身操作写 `admin_audit` | 审计者成为审计盲区 | `audit()` + `storage.write_admin` |
 
-关于失败锁定为什么按「用户名 + IP」而不是只按用户名：只按用户名的话，
-任何人故意连输 5 次错密码就能把 `root` 锁死——这本身就是一种拒绝服务攻击。
-加上 IP 后，锁只影响攻击来源。代价是攻击者换 IP 可以继续尝试；
-对教学项目这个权衡是合算的。
-
-### 一个值得注意的设计取舍
-
-`current_admin()` **每次都回查 `AdminStore`**，而不是把角色写进 cookie。
-好处是超管删掉某账号后，那个人的旧会话在下一次请求就立即失效，
-完全不需要额外的"踢下线"逻辑——因为 `get()` 查不到就返回 `None`，
-自然退化成"未登录"。代价是每个请求多一次字典查询（可忽略）。
+锁定按「用户名 + IP」。`current_admin()` 每次回查账号表，删号后旧 cookie 下一请求失效。
 
 ---
 
@@ -265,17 +273,32 @@ uv run pytest -q            # 59 passed
   "admin_secret_key": "<32 字节 hex>",  // 签名 session cookie；首次启动自动生成并写回
   "admin_session_minutes": 30,          // 会话超时
 
-  "admins": {                        // 后台账号：只存哈希，绝不存明文
+  "keepalive": true,                 // 客户端 HTTP/1.1 长连接
+  "pool_max_per_host": 8,            // 每个上游 host 最多缓存几条空闲连接
+  "pool_idle_seconds": 30,           // 空闲超过该秒数丢掉
+
+  "limits": {                        // 按角色；数值 0 = 不限制
+    "user": {
+      "rps": 5,                      // 每秒请求数（令牌桶，超了 429）
+      "bps": 65536,                  // 带宽（搬字节时 sleep）
+      "quota_requests": 10000,       // 窗口内请求次数
+      "quota_bytes": 104857600,      // 窗口内字节
+      "quota_window": 86400          // 窗口长度（秒），默认一天
+    },
+    "admin": { "rps": 0, "bps": 0, "quota_requests": 0, "quota_bytes": 0 }
+  },
+
+  "admins": {
     "root": { "password_hash": "scrypt:...", "role": "superadmin" },
     "ops":  { "password_hash": "scrypt:...", "role": "admin" }
   },
 
-  "users": {                         // 代理账号（本轮仍为明文，见已知限制）
-    "admin": { "password": "admin123", "role": "admin" },
-    "alice": { "password": "alice123", "role": "user" }
+  "users": {
+    "admin": { "password_hash": "scrypt:...", "role": "admin" },
+    "alice": { "password_hash": "scrypt:...", "role": "user" }
   },
 
-  "rules": {                         // 过滤规则；管理端改的就是这一段
+  "rules": {
     "whitelist": ["*.gov.cn", "*.edu.cn"],
     "blacklist": ["evil.com", "gambling.example"],
     "category":  ["gambling"],
@@ -284,52 +307,45 @@ uv run pytest -q            # 59 passed
 }
 ```
 
+> 代理账号字段名必须是 `password_hash`。若 `config.json` 里还写成 `"password": "scrypt:..."`，
+> 校验读不到哈希，所有 `-U` 都会 407。
+
 ### 生成密码哈希
+
+后台账号和代理账号用同一条命令：
 
 ```bash
 uv run python -m auth.admins <你的密码>
 ```
 
-**必须用这个命令**，不要手工拼字符串。scrypt 哈希串形如
-`scrypt:32768:8:1$<salt>$<hash>`，里面有 `$`；在 PowerShell 里手工拼接时
-`$salt` 会被当变量插值成空串，产出一个"看起来正常、但永远校验失败"的错哈希。
+scrypt 哈希串形如 `scrypt:32768:8:1$<salt>$<hash>`，里面有 `$`。
+在 PowerShell 里手工拼接时 `$salt` 会被当变量插值成空串，校验会一直失败。
 
 ### 关于 `admin_secret_key`
 
 `proxy/main.py` 启动时会调 `config.loader.ensure_secret_key()`：
-配置里没有就自动生成一个随机值并写回文件。这样保证重启后旧会话仍有效，
-也不会把密钥硬编码在源码里。
+配置里没有就生成随机值并回写，重启后旧会话仍有效。
 
-如果要把本项目提交到公开仓库，建议把 `config/config.json` 加入 `.gitignore`，
-只提交一份 `config.example.json`（不含 `admins`、`admin_secret_key`）。
+提交到公开仓库时把 `config/config.json` 加入 `.gitignore`，
+只提交 `config.example.json`（不含 `admins`、`users`、`admin_secret_key`）。
 
 ---
 
 ## 七、已知限制
 
 - 只做域名级过滤，不做内容/URL 路径级过滤（需 MITM，本项目明确排除）。
-- 每个请求强制 `Connection: close`，不做长连接与连接池复用（教学取舍）。
-- 无磁盘缓存、无带宽限速、无防病毒扫描。
-- **管理端用的是 Flask 开发服务器**，仅限演示，不适合生产（无 TLS、单点、性能低）。
-- **代理账号 `users` 的密码仍是明文**——后台账号已改为 scrypt 哈希，
-  代理账号属于协议层认证，本轮刻意未动（见 §八）。
-- **`SESSION_COOKIE_SECURE` 刻意关闭**：本地是 http，开启后浏览器不回传 cookie，
-  会导致"无论如何都登不上"。生产上 HTTPS 后才应打开。
+- 无磁盘缓存、无防病毒扫描。
+- CONNECT 隧道不进入上游连接池（加密流无法按 HTTP 请求复用）。
+- Flask 开发服务器只适合本机演示。
+- 未开 `SESSION_COOKIE_SECURE`：本地 http 下开启后浏览器不回传 cookie。生产 HTTPS 再开。
 
 ---
 
-## 八、后续改进方向（可写进报告）
+## 八、还可以做的
 
-1. **代理账号也改哈希**：`users` 段换成 `password_hash`，同步改
-   `auth/roles.py` 的校验逻辑。改动面比后台鉴权大（要回归 `test_roles.py`
-   与 `test_proxy_integration.py`），所以本轮没有一次做完。
-2. **强制代理认证**：目前缺少 `Proxy-Authorization` 时兜底为匿名 `user`，
-   不回 `407 Proxy Authentication Required`。要做到"不认证就拒绝"，
-   需在 `proxy/connection.py` 加一段判断。
-3. **管理端上 HTTPS + 生产级 WSGI 服务器**（waitress / gunicorn）。
-4. **跨机部署**：`listen_host` 改 `0.0.0.0` + 放行防火墙 8080；
-   管理端保持 `127.0.0.1`，只在本机访问。
-5. **长连接与连接池**、内容级过滤、限速与配额。
+- 管理端 HTTPS + waitress / gunicorn
+- 跨机：`listen_host` 改 `0.0.0.0`，管理端仍绑 `127.0.0.1`
+- 内容级过滤（需要 MITM，本项目不做）
 
 ---
 
@@ -338,17 +354,16 @@ uv run python -m auth.admins <你的密码>
 | 测试文件 | 用例数 | 覆盖内容 |
 | --- | ---: | --- |
 | `tests/test_engine.py` | 13 | 域名匹配、通配、优先级、分类、正则、角色范围、热更新 |
-| `tests/test_roles.py` | 6 | 代理端 Basic 认证的四种分支 |
-| `tests/test_proxy_integration.py` | 8 | 端到端：放行、拦截、CONNECT 隧道、审计落库、角色权限 |
+| `tests/test_roles.py` | 8 | 代理端 Basic：成功、缺头/错密/坏哈希 → None、忽略明文 `password` |
+| `tests/test_limits.py` | 7 | rps 令牌桶、配额、按用户/角色隔离、bps sleep |
+| `tests/test_pool.py` | 4 | `wants_keep_alive`、连接复用 / 不复用 |
+| `tests/test_proxy_integration.py` | 13 | 放行、拦截、CONNECT、审计、角色、407、keep-alive、429 |
 | `tests/test_admin.py` | 10 | 管理端渲染 + 加/删规则热更新 + 持久化 |
 | `tests/test_admin_auth.py` | 22 | 未登录跳转、错密、锁定、越权 403、CSRF 400、最后超管保护、密码哈希不回显、登出失效、管理操作落库 |
-| **合计** | **59** | |
+| **合计** | **77** | |
 
-集成测试在 `127.0.0.1` 上自建源站与代理（端口取 0 由系统分配），**不依赖外网**；
-管理端测试用标准库 `urllib` + `CookieJar` 保持登录态，不引入额外测试依赖。
+集成测试在 `127.0.0.1` 上自建源站与代理（端口取 0），不依赖外网。
+管理端测试用标准库 `urllib` + `CookieJar`。
 
-### 说明：`tmp_path_retention_count`
-
-`pyproject.toml` 里把 pytest 的临时目录保留数设成了 1000（实际等于关掉自动清理）。
-原因是 pytest 默认会在每次会话开始时删除系统临时目录下较旧的 `pytest-of-*`，
-在受限环境下这个跨目录删除会被安全策略拦截。代价是临时目录会留少量残渣（每个几十 KB）。
+`pyproject.toml` 把 pytest 临时目录保留数设成 1000，避免默认清理
+`pytest-of-*` 时被安全策略拦截。代价是会留少量残渣。

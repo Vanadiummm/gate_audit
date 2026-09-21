@@ -1,8 +1,4 @@
-"""管理端功能测试：登录之后，规则维护是否生效、是否落盘。
-
-鉴权与权限相关的用例在 test_admin_auth.py 里，本文件只关心"登录之后的业务功能"。
-公共 fixture（admin_env / root_client / ops_client）见 tests/conftest.py。
-"""
+"""管理端登录后的规则维护和落盘。鉴权见 test_admin_auth.py。"""
 
 import json
 
@@ -11,7 +7,7 @@ from filter.rules import Action
 
 
 def test_login_page_renders(admin_env):
-    """未登录时应能看到登录页，且页面里带 CSRF 隐藏域。"""
+    """登录页带 CSRF。"""
     resp = admin_env.client().get("/login")
     assert resp.status == 200
     assert "管理员登录" in resp.text
@@ -19,28 +15,25 @@ def test_login_page_renders(admin_env):
 
 
 def test_index_renders_rules_and_logs(root_client):
-    """超管登录后总览页应展示规则、网络审计与管理操作日志三块。"""
+    """总览含规则、访问审计、管理操作日志。"""
     resp = root_client.get("/")
     assert resp.status == 200
     assert "过滤规则" in resp.text
-    assert "evil.com" in resp.text                  # 来自初始配置的规则
+    assert "evil.com" in resp.text
     assert "网络访问审计" in resp.text
     assert "管理操作日志" in resp.text
 
 
 def test_add_rule_hot_reloads_and_persists(root_client, admin_env):
-    """加规则应同时满足三件事：引擎热更新、判定变化、写回 config.json。"""
+    """加规则后引擎、判定、config.json 同步更新。"""
     resp = root_client.post("/rules/add", {"kind": "blacklist", "pattern": "bad.test"})
-    assert resp.status == 302                       # PRG：处理完重定向回首页
+    assert resp.status == 302
 
-    # 1) 引擎立刻生效（热更新，不需要重启）
     assert "bad.test" in admin_env.ctx.engine.snapshot()["blacklist"]
 
-    # 2) 判定随之改变
     decision = admin_env.ctx.engine.evaluate(RequestMeta(host="bad.test"))
     assert decision.action is Action.BLOCK
 
-    # 3) 已持久化到 config.json（重启也不丢）
     saved = json.loads(admin_env.cfg.path.read_text(encoding="utf-8"))
     assert "bad.test" in saved["rules"]["blacklist"]
 
